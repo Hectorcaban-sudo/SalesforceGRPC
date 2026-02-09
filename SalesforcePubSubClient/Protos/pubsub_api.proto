@@ -1,0 +1,97 @@
+syntax = "proto3";
+
+package pubsub_api;
+
+option csharp_namespace = "SalesforcePubSub.Protos";
+
+// Pub/Sub API Service
+service PubSub {
+  rpc GetTopic(TopicRequest) returns (TopicInfo);
+  rpc GetSchema(SchemaRequest) returns (SchemaInfo);
+  rpc Subscribe(FetchRequest) returns (stream FetchResponse);
+  rpc Publish(PublishRequest) returns (PublishResponse);
+  rpc PublishStream(stream PublishRequest) returns (stream PublishResponse);
+}
+
+// Topic Request/Response
+message TopicRequest {
+  string topic_name = 1;
+}
+
+message TopicInfo {
+  string topic_name = 1;
+  string topic_type = 2;
+  string schema_id = 3;
+}
+
+// Schema Request/Response
+message SchemaRequest {
+  string schema_id = 1;
+}
+
+message SchemaInfo {
+  string schema_id = 1;
+  string schema_json = 2;
+  string type = 3;
+}
+
+// Subscription Request
+message FetchRequest {
+  string topic_name = 1;
+  string replay_preset = 2;
+  string replay_id = 3;
+  int64 num_requested = 4;
+}
+
+// Subscription Response
+message FetchResponse {
+  repeated FetchResult results = 1;
+  string latest_replay_id = 2;
+  string pending_num_requested = 3;
+}
+
+message FetchResult {
+  ConsumerEvent event = 1;
+  string replay_id = 2;
+}
+
+// Consumer Event (Received events)
+message ConsumerEvent {
+  bytes payload = 1;
+  repeated EventAttribute event_attributes = 2;
+  
+  message EventAttribute {
+    string key = 1;
+    string value = 2;
+  }
+}
+
+// Publish Request/Response
+message PublishRequest {
+  string topic_name = 1;
+  repeated ProducerEvent events = 2;
+}
+
+message PublishResponse {
+  repeated PublishResult results = 1;
+}
+
+message PublishResult {
+  string replay_id = 1;
+  ProducerEvent event = 2;
+  string error = 3;
+}
+
+// Producer Event (Published events)
+message ProducerEvent {
+  bytes payload = 1;
+  string schema_id = 2;
+  string id = 3;
+}
+
+// Replay Presets
+enum ReplayPreset {
+  LATEST = 0;
+  EARLIEST = 1;
+  CUSTOM = 2;
+}
