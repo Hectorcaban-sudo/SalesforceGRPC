@@ -1,8 +1,9 @@
 @echo off
 REM Salesforce Pub/Sub API Client - Quick Start Script for Windows
+REM ASP.NET Core version with AddGrpcClient
 
 echo ==============================================
-echo Salesforce Pub/Sub API C# Client
+echo Salesforce Pub/Sub API ASP.NET Core Client
 echo ==============================================
 echo.
 
@@ -88,7 +89,7 @@ if %ERRORLEVEL% neq 0 (
 )
 
 echo.
-echo Starting Salesforce Pub/Sub subscriber...
+echo Starting Salesforce Pub/Sub subscriber (ASP.NET Core)...
 echo    Press Ctrl+C to stop
 echo.
 

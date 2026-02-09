@@ -1,9 +1,7 @@
 using System;
-using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Grpc.Core;
-using Grpc.Net.Client;
 using Microsoft.Extensions.Logging;
 using SalesforcePubSub.Protos;
 using SalesforcePubSubClient.Configuration;
@@ -15,49 +13,18 @@ namespace SalesforcePubSubClient.Services;
 /// </summary>
 public class PubSubSubscriber
 {
+    private readonly PubSub.PubSubClient _client;
     private readonly SalesforceConfig _config;
     private readonly ILogger<PubSubSubscriber> _logger;
-    private GrpcChannel? _channel;
-    private PubSub.PubSubClient? _client;
 
-    public PubSubSubscriber(SalesforceConfig config, ILogger<PubSubSubscriber> logger)
+    public PubSubSubscriber(
+        PubSub.PubSubClient client,
+        SalesforceConfig config,
+        ILogger<PubSubSubscriber> logger)
     {
-        _config = config;
-        _logger = logger;
-    }
-
-    /// <summary>
-    /// Connects to the Salesforce Pub/Sub API
-    /// </summary>
-    public async Task ConnectAsync()
-    {
-        _logger.LogInformation($"Connecting to Salesforce Pub/Sub API at {_config.PubSubEndpoint}");
-
-        _channel = GrpcChannel.ForAddress($"https://{_config.PubSubEndpoint}", new GrpcChannelOptions
-        {
-            MaxReceiveMessageSize = 100 * 1024 * 1024, // 100 MB
-            HttpHandler = new System.Net.Http.HttpClientHandler
-            {
-                ServerCertificateCustomValidationCallback = System.Net.Http.HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
-            }
-        });
-
-        _client = new PubSub.PubSubClient(_channel);
-        _logger.LogInformation("Successfully connected to Salesforce Pub/Sub API");
-    }
-
-    /// <summary>
-    /// Creates metadata headers for authentication
-    /// </summary>
-    private Metadata CreateAuthMetadata()
-    {
-        var metadata = new Metadata
-        {
-            { "accesstoken", _config.AccessToken },
-            { "instanceurl", _config.InstanceUrl },
-            { "tenantid", _config.TenantId }
-        };
-        return metadata;
+        _client = client ?? throw new ArgumentNullException(nameof(client));
+        _config = config ?? throw new ArgumentNullException(nameof(config));
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
     /// <summary>
@@ -65,9 +32,6 @@ public class PubSubSubscriber
     /// </summary>
     public async Task SubscribeAsync(Func<ConsumerEvent, Task> eventHandler, CancellationToken cancellationToken = default)
     {
-        if (_client == null)
-            throw new InvalidOperationException("Not connected. Call ConnectAsync first.");
-
         _logger.LogInformation($"Subscribing to topic: {_config.TopicName}");
 
         var request = new FetchRequest
@@ -78,11 +42,9 @@ public class PubSubSubscriber
             NumRequested = _config.NumRequested
         };
 
-        var metadata = CreateAuthMetadata();
-
         try
         {
-            using var streamingCall = _client.Subscribe(request, metadata, cancellationToken: cancellationToken);
+            using var streamingCall = _client.Subscribe(request, cancellationToken: cancellationToken);
 
             _logger.LogInformation("Successfully subscribed. Waiting for events...");
 
@@ -125,19 +87,14 @@ public class PubSubSubscriber
     /// </summary>
     public async Task<TopicInfo> GetTopicInfoAsync()
     {
-        if (_client == null)
-            throw new InvalidOperationException("Not connected. Call ConnectAsync first.");
-
         var request = new TopicRequest
         {
             TopicName = _config.TopicName
         };
 
-        var metadata = CreateAuthMetadata();
-
         _logger.LogInformation($"Getting topic info for: {_config.TopicName}");
 
-        var response = await _client.GetTopicAsync(request, metadata);
+        var response = await _client.GetTopicAsync(request);
 
         _logger.LogInformation($"Topic info retrieved - Schema ID: {response.SchemaId}, Type: {response.TopicType}");
 
@@ -149,42 +106,17 @@ public class PubSubSubscriber
     /// </summary>
     public async Task<SchemaInfo> GetSchemaInfoAsync(string schemaId)
     {
-        if (_client == null)
-            throw new InvalidOperationException("Not connected. Call ConnectAsync first.");
-
         var request = new SchemaRequest
         {
             SchemaId = schemaId
         };
 
-        var metadata = CreateAuthMetadata();
-
         _logger.LogInformation($"Getting schema info for: {schemaId}");
 
-        var response = await _client.GetSchemaAsync(request, metadata);
+        var response = await _client.GetSchemaAsync(request);
 
         _logger.LogInformation($"Schema info retrieved - Type: {response.Type}");
 
         return response;
-    }
-
-    /// <summary>
-    /// Disconnects from the Salesforce Pub/Sub API
-    /// </summary>
-    public async Task DisconnectAsync()
-    {
-        if (_channel != null)
-        {
-            await _channel.ShutdownAsync();
-            _logger.LogInformation("Disconnected from Salesforce Pub/Sub API");
-        }
-    }
-
-    /// <summary>
-    /// Disposes resources
-    /// </summary>
-    public async ValueTask DisposeAsync()
-    {
-        await DisconnectAsync();
     }
 }
