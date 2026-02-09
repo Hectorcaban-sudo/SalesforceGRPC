@@ -2,9 +2,10 @@
 
 # Salesforce Pub/Sub API Client - Quick Start Script
 # This script helps you get started with the subscriber
+# ASP.NET Core version with AddGrpcClient
 
 echo "=============================================="
-echo "Salesforce Pub/Sub API C# Client"
+echo "Salesforce Pub/Sub API ASP.NET Core Client"
 echo "=============================================="
 echo ""
 
@@ -78,7 +79,7 @@ if [ $? -ne 0 ]; then
 fi
 
 echo ""
-echo "✅ Starting Salesforce Pub/Sub subscriber..."
+echo "✅ Starting Salesforce Pub/Sub subscriber (ASP.NET Core)..."
 echo "   Press Ctrl+C to stop"
 echo ""
 

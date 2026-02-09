@@ -1,6 +1,8 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using SalesforcePubSub.Protos;
 using SalesforcePubSubClient.Configuration;
@@ -8,111 +10,52 @@ using SalesforcePubSubClient.Services;
 
 namespace SalesforcePubSubClient;
 
-class Program
+/// <summary>
+/// ASP.NET Core Hosted Service for Salesforce Pub/Sub subscription
+/// </summary>
+public class SalesforcePubSubHostedService : BackgroundService
 {
-    static async Task Main(string[] args)
-    {
-        // Setup logging
-        using var loggerFactory = LoggerFactory.Create(builder =>
-        {
-            builder
-                .AddConsole()
-                .SetMinimumLevel(LogLevel.Information);
-        });
+    private readonly IServiceProvider _serviceProvider;
+    private readonly ILogger<SalesforcePubSubHostedService> _logger;
 
-        var logger = loggerFactory.CreateLogger<Program>();
+    public SalesforcePubSubHostedService(
+        IServiceProvider serviceProvider,
+        ILogger<SalesforcePubSubHostedService> logger)
+    {
+        _serviceProvider = serviceProvider;
+        _logger = logger;
+    }
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        _logger.LogInformation("Salesforce Pub/Sub Hosted Service Starting...");
 
         try
         {
-            logger.LogInformation("Salesforce Pub/Sub API Subscriber Starting...");
+            using var scope = _serviceProvider.CreateScope();
+            var subscriber = scope.ServiceProvider.GetRequiredService<PubSubSubscriber>();
 
-            // Load configuration (try environment variables first, then file)
-            SalesforceConfig config;
-            if (args.Length > 0)
+            await subscriber.SubscribeAsync(async (consumerEvent) =>
             {
-                logger.LogInformation($"Loading configuration from file: {args[0]}");
-                config = SalesforceConfig.FromFile(args[0]);
-            }
-            else
-            {
-                logger.LogInformation("Loading configuration from environment variables");
-                config = SalesforceConfig.FromEnvironment();
-            }
-
-            // Validate configuration
-            config.Validate();
-            logger.LogInformation($"Configuration validated successfully");
-            logger.LogInformation($"Topic: {config.TopicName}");
-            logger.LogInformation($"Endpoint: {config.PubSubEndpoint}");
-            logger.LogInformation($"Replay Preset: {config.ReplayPreset}");
-
-            // Create subscriber
-            var subscriber = new PubSubSubscriber(config, loggerFactory.CreateLogger<PubSubSubscriber>());
-
-            // Setup cancellation token
-            using var cts = new CancellationTokenSource();
-            
-            // Handle Ctrl+C to gracefully shutdown
-            Console.CancelKeyPress += (sender, e) =>
-            {
-                e.Cancel = true;
-                logger.LogInformation("Shutdown signal received. Canceling subscription...");
-                cts.Cancel();
-            };
-
-            try
-            {
-                // Connect to Salesforce
-                await subscriber.ConnectAsync();
-
-                // Get topic information
-                var topicInfo = await subscriber.GetTopicInfoAsync();
-                logger.LogInformation($"Topic Schema ID: {topicInfo.SchemaId}");
-
-                // Get schema information (optional, for decoding)
-                SchemaInfo? schemaInfo = null;
-                try
-                {
-                    schemaInfo = await subscriber.GetSchemaInfoAsync(topicInfo.SchemaId);
-                    logger.LogInformation($"Schema Type: {schemaInfo.Type}");
-                }
-                catch (Exception ex)
-                {
-                    logger.LogWarning(ex, "Could not retrieve schema info. Event decoding may be limited.");
-                }
-
-                // Subscribe to events
-                await subscriber.SubscribeAsync(async (consumerEvent) =>
-                {
-                    await ProcessEvent(consumerEvent, schemaInfo, logger);
-                }, cts.Token);
-            }
-            catch (OperationCanceledException)
-            {
-                logger.LogInformation("Subscription cancelled by user");
-            }
-            catch (Exception ex)
-            {
-                logger.LogError(ex, "Error in subscription loop");
-                throw;
-            }
-            finally
-            {
-                await subscriber.DisconnectAsync();
-            }
+                await ProcessEvent(consumerEvent, scope);
+            }, stoppingToken);
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogInformation("Subscription cancelled");
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Fatal error in application");
-            Environment.Exit(1);
+            _logger.LogError(ex, "Fatal error in hosted service");
+            throw;
         }
     }
 
-    /// <summary>
-    /// Processes a received event
-    /// </summary>
-    private static async Task ProcessEvent(ConsumerEvent consumerEvent, SchemaInfo? schemaInfo, ILogger logger)
+    private static async Task ProcessEvent(ConsumerEvent consumerEvent, IServiceScope scope)
     {
+        var logger = scope.ServiceProvider.GetRequiredService<ILogger<SalesforcePubSubHostedService>>();
+        var config = scope.ServiceProvider.GetRequiredService<SalesforceConfig>();
+
         try
         {
             logger.LogInformation("===========================================");
@@ -129,21 +72,9 @@ class Program
             Dictionary<string, object>? decodedPayload = null;
             try
             {
-                if (schemaInfo != null && !string.IsNullOrWhiteSpace(schemaInfo.SchemaJson))
-                {
-                    // Decode with schema
-                    decodedPayload = AvroEventDecoder.DecodeAvroPayloadWithSchema(
-                        consumerEvent.Payload.ToByteArray(),
-                        schemaInfo.SchemaJson
-                    );
-                }
-                else
-                {
-                    // Decode without schema (limited)
-                    decodedPayload = AvroEventDecoder.DecodeAvroPayload(
-                        consumerEvent.Payload.ToByteArray()
-                    );
-                }
+                decodedPayload = AvroEventDecoder.DecodeAvroPayload(
+                    consumerEvent.Payload.ToByteArray()
+                );
 
                 logger.LogInformation("Payload Data:");
                 foreach (var kvp in decodedPayload)
@@ -169,9 +100,6 @@ class Program
         }
     }
 
-    /// <summary>
-    /// Formats values for display
-    /// </summary>
     private static string FormatValue(object? value)
     {
         if (value == null)
@@ -185,21 +113,124 @@ class Program
         };
     }
 
-    /// <summary>
-    /// Custom event processing logic
-    /// </summary>
     private static Task ProcessCustomEvent(Dictionary<string, object>? decodedPayload, ILogger logger)
     {
         // Add your custom business logic here
-        // For example:
+        // Examples:
         // - Save to database
         // - Call external APIs
         // - Send notifications
         // - Update caches
         
-        // Example: Log the event to a file or external system
-        // await File.AppendAllTextAsync("events.log", DateTime.UtcNow + " - Event received\n");
+        logger.LogInformation("Processing custom event logic...");
         
         return Task.CompletedTask;
+    }
+
+    public override async Task StopAsync(CancellationToken cancellationToken)
+    {
+        _logger.LogInformation("Salesforce Pub/Sub Hosted Service Stopping...");
+        await base.StopAsync(cancellationToken);
+    }
+}
+
+class Program
+{
+    static async Task Main(string[] args)
+    {
+        var host = Host.CreateDefaultBuilder(args)
+            .ConfigureAppConfiguration((context, config) =>
+            {
+                // Add command line arguments support
+                if (args.Length > 0)
+                {
+                    config.AddCommandLine(args);
+                }
+
+                // Load from appsettings.json
+                config.AddJsonFile("appsettings.json", optional: true, reloadOnChange: true);
+                config.AddJsonFile($"appsettings.{context.HostingEnvironment.EnvironmentName}.json", optional: true);
+            })
+            .ConfigureServices((context, services) =>
+            {
+                // Bind configuration
+                var config = context.Configuration.Get<SalesforceConfig>() ?? new SalesforceConfig();
+                
+                // Override with environment variables if present
+                if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("SF_INSTANCE_URL")))
+                {
+                    var envConfig = SalesforceConfig.FromEnvironment();
+                    config = envConfig;
+                }
+                else if (args.Length > 0 && System.IO.File.Exists(args[0]))
+                {
+                    var fileConfig = SalesforceConfig.FromFile(args[0]);
+                    config = fileConfig;
+                }
+
+                config.Validate();
+
+                // Register configuration
+                services.AddSingleton(config);
+
+                // Add gRPC client for Salesforce Pub/Sub API
+                var endpoint = $"https://{config.PubSubEndpoint}";
+                services.AddGrpcClient<PubSub.PubSubClient>(o =>
+                {
+                    o.Address = new Uri(endpoint);
+                    o.ChannelOptionsActions.Add(options =>
+                    {
+                        options.MaxReceiveMessageSize = 100 * 1024 * 1024; // 100 MB
+                        options.HttpHandler = new System.Net.Http.HttpClientHandler
+                        {
+                            ServerCertificateCustomValidationCallback = 
+                                System.Net.Http.HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
+                        };
+                    });
+                })
+                .AddInterceptor<SalesforcePubSubAuthInterceptor>();
+
+                // Register services
+                services.AddSingleton<PubSubSubscriber>();
+                services.AddSingleton<SalesforcePubSubAuthInterceptor>();
+
+                // Register hosted service
+                services.AddHostedService<SalesforcePubSubHostedService>();
+            })
+            .ConfigureLogging(logging =>
+            {
+                logging.ClearProviders();
+                logging.AddConsole();
+                logging.SetMinimumLevel(LogLevel.Information);
+            })
+            .Build();
+
+        var logger = host.Services.GetRequiredService<ILogger<Program>>();
+        logger.LogInformation("Salesforce Pub/Sub API Subscriber Starting...");
+        logger.LogInformation($"Endpoint: {host.Services.GetRequiredService<SalesforceConfig>().PubSubEndpoint}");
+        logger.LogInformation($"Topic: {host.Services.GetRequiredService<SalesforceConfig>().TopicName}");
+
+        // Handle Ctrl+C gracefully
+        var cancellationTokenSource = new CancellationTokenSource();
+        Console.CancelKeyPress += (sender, e) =>
+        {
+            e.Cancel = true;
+            logger.LogInformation("Shutdown signal received. Stopping...");
+            cancellationTokenSource.Cancel();
+        };
+
+        try
+        {
+            await host.RunAsync(cancellationTokenSource.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            logger.LogInformation("Application shutdown requested");
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Fatal error in application");
+            throw;
+        }
     }
 }
